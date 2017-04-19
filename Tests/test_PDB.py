@@ -12,6 +12,7 @@
 """Unit tests for the Bio.PDB module."""
 from __future__ import print_function
 
+from copy import deepcopy
 import os
 import sys
 import tempfile
@@ -24,22 +25,25 @@ try:
     from numpy import dot  # Missing on old PyPy's micronumpy
     del dot
     from numpy.linalg import svd, det  # Missing in PyPy 2.0 numpypy
+    from numpy.random import random
 except ImportError:
     from Bio import MissingPythonDependencyError
     raise MissingPythonDependencyError(
         "Install NumPy if you want to use Bio.PDB.")
 
 from Bio import BiopythonWarning
+from Bio import AlignIO
 from Bio.Seq import Seq
 from Bio.Alphabet import generic_protein
 from Bio.PDB import PDBParser, PPBuilder, CaPPBuilder, PDBIO, Select
 from Bio.PDB import HSExposureCA, HSExposureCB, ExposureCN
 from Bio.PDB.PDBExceptions import PDBConstructionException, PDBConstructionWarning
-from Bio.PDB import rotmat, Vector
-from Bio.PDB import Residue, Atom
+from Bio.PDB import rotmat, Vector, refmat, calc_angle, calc_dihedral, rotaxis, m2rotaxis
+from Bio.PDB import Residue, Atom, StructureAlignment, Superimposer, Selection
 from Bio.PDB import make_dssp_dict
 from Bio.PDB import DSSP
 from Bio.PDB.NACCESS import process_asa_data, process_rsa_data
+from Bio.PDB.ResidueDepth import _get_atom_radius
 
 
 # NB: the 'A_' prefix ensures this test case is run first
@@ -76,7 +80,7 @@ class A_ExceptionTest(unittest.TestCase):
                     "Residue (' ', 81, ' ') redefined at line 646.",
                     'Atom O defined twice in residue <Residue HOH het=W resseq=67 icode= > at line 822.'
                     ]):
-                self.assertTrue(msg in str(wrn), str(wrn))
+                self.assertIn(msg, str(wrn))
 
     def test_2_strict(self):
         """Check error: Parse a flawed PDB file in strict mode."""
@@ -425,9 +429,9 @@ class ParseTest(unittest.TestCase):
         self.assertEqual(len(chain), 1)
         self.assertEqual(" ".join(residue.resname for residue in chain), "PCA")
         self.assertEqual(" ".join(atom.name for atom in chain.get_atoms()),
-                         "N CA CB CG CD OE C O CA  ")
+                         "N CA CB CG DA OE C O CA  ")
         self.assertEqual(" ".join(atom.element for atom in chain.get_atoms()),
-                         "N C C C C O C O CA")
+                         "N C C C D O C O CA")
         # Second model
         model = structure[1]
         self.assertEqual(model.id, 1)
@@ -520,10 +524,16 @@ class ParseTest(unittest.TestCase):
             # Check if there are lines besides 'ATOM', 'TER' and 'END'
             with open(filename, 'rU') as handle:
                 record_set = set(l[0:6] for l in handle)
-            record_set -= set(('ATOM  ', 'HETATM', 'MODEL ', 'ENDMDL', 'TER\n', 'END\n'))
+            record_set -= set(('ATOM  ', 'HETATM', 'MODEL ', 'ENDMDL', 'TER\n',  'TER   ', 'END\n', 'END   '))
             self.assertEqual(record_set, set())
         finally:
             os.remove(filename)
+
+    def test_deepcopy_of_structure_with_disorder(self):
+            """Test deepcopy of a structure with disordered atoms.
+            Shouldn't cause recursion.
+            """
+            _ = deepcopy(self.structure)
 
 
 class ParseReal(unittest.TestCase):
@@ -789,7 +799,6 @@ class WriteTest(unittest.TestCase):
 
     def test_pdbio_select(self):
         """Write a selection of the structure using a Select subclass"""
-
         # Selection class to filter all alpha carbons
         class CAonly(Select):
             """
@@ -837,7 +846,7 @@ class WriteTest(unittest.TestCase):
 
 
 class Exposure(unittest.TestCase):
-    "Testing Bio.PDB.HSExposure."
+    """Testing Bio.PDB.HSExposure."""
     def setUp(self):
         pdb_filename = "PDB/a_structure.pdb"
         with warnings.catch_warnings():
@@ -935,6 +944,7 @@ class Atom_Element(unittest.TestCase):
         self.assertEqual('N', atoms[0].element)  # N
         self.assertEqual('C', atoms[1].element)  # Alpha Carbon
         self.assertEqual('CA', atoms[8].element)  # Calcium
+        self.assertEqual('D', atoms[4].element)  # Deuterium
 
     def test_ions(self):
         """Element for magnesium is assigned correctly."""
@@ -994,6 +1004,97 @@ class IterationTests(unittest.TestCase):
         atoms = ["%12s" % str((atom.id, atom.altloc)) for atom in self.struc.get_atoms()]
         self.assertEqual(len(atoms), 756)
 
+
+class ChangingIdTests(unittest.TestCase):
+
+    def setUp(self):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PDBConstructionWarning)
+            self.struc = PDBParser(PERMISSIVE=True).get_structure(
+                                                  'X', "PDB/a_structure.pdb")
+
+    def test_change_model_id(self):
+        """Change the id of a model"""
+        for model in self.struc:
+            break  # Get first model in structure
+        model.id = 2
+        self.assertEqual(model.id, 2)
+        self.assertIn(2, self.struc)
+        self.assertNotIn(0, self.struc)
+
+    def test_change_model_id_raises(self):
+        """Cannot change id to a value already in use by another child"""
+        model = next(iter(self.struc))
+        with self.assertRaises(ValueError):
+            model.id = 1
+        # Make sure nothing was changed
+        self.assertEqual(model.id, 0)
+        self.assertIn(0, self.struc)
+        self.assertIn(1, self.struc)
+
+    def test_change_chain_id(self):
+        """Change the id of a model"""
+        chain = next(iter(self.struc.get_chains()))
+        chain.id = "R"
+        self.assertEqual(chain.id, "R")
+        model = next(iter(self.struc))
+        self.assertIn("R", model)
+
+    def test_change_residue_id(self):
+        """Change the id of a residue"""
+        chain = next(iter(self.struc.get_chains()))
+        res = chain[('H_PCA', 1, ' ')]
+        res.id = (' ', 1, ' ')
+
+        self.assertEqual(res.id, (' ', 1, ' '))
+        self.assertIn((' ', 1, ' '), chain)
+        self.assertNotIn(('H_PCA', 1, ' '), chain)
+        self.assertEqual(chain[(' ', 1, ' ')], res)
+
+    def test_full_id_is_updated_residue(self):
+        """
+        Invalidate cached full_ids if an id is changed.
+        """
+        atom = next(iter(self.struc.get_atoms()))
+
+        # Generate the original full id.
+        original_id = atom.get_full_id()
+        self.assertEqual(original_id,
+                         ('X', 0, 'A', ('H_PCA', 1, ' '), ('N', ' ')))
+        residue = next(iter(self.struc.get_residues()))
+
+        # Make sure the full id was in fact cached,
+        # so we need to invalidate it later.
+        self.assertEqual(residue.full_id, ('X', 0, 'A', ('H_PCA', 1, ' ')))
+
+        # Changing the residue's id should lead to an updated full id.
+        residue.id = (' ', 1, ' ')
+        new_id = atom.get_full_id()
+        self.assertNotEqual(original_id, new_id)
+        self.assertEqual(new_id, ('X', 0, 'A', (' ', 1, ' '), ('N', ' ')))
+
+    def test_full_id_is_updated_chain(self):
+        """
+        Invalidate cached full_ids if an id is changed.
+        """
+        atom = next(iter(self.struc.get_atoms()))
+
+        # Generate the original full id.
+        original_id = atom.get_full_id()
+        self.assertEqual(original_id,
+                         ('X', 0, 'A', ('H_PCA', 1, ' '), ('N', ' ')))
+        residue = next(iter(self.struc.get_residues()))
+
+        # Make sure the full id was in fact cached,
+        # so we need to invalidate it later.
+        self.assertEqual(residue.full_id, ('X', 0, 'A', ('H_PCA', 1, ' ')))
+        chain = next(iter(self.struc.get_chains()))
+
+        # Changing the chain's id should lead to an updated full id.
+        chain.id = 'Q'
+        new_id = atom.get_full_id()
+        self.assertNotEqual(original_id, new_id)
+        self.assertEqual(new_id, ('X', 0, 'Q', ('H_PCA', 1, ' '), ('N', ' ')))
 
 # class RenumberTests(unittest.TestCase):
 #    """Tests renumbering of structures."""
@@ -1057,6 +1158,165 @@ class TransformTests(unittest.TestCase):
             for i in range(0, 3):
                 self.assertAlmostEqual(newpos[i], newpos_check[i])
 
+    def test_Vector(self):
+        """Test Vector object"""
+        v1 = Vector(0, 0, 1)
+        v2 = Vector(0, 0, 0)
+        v3 = Vector(0, 1, 0)
+        v4 = Vector(1, 1, 0)
+
+        self.assertEqual(calc_angle(v1, v2, v3), 1.5707963267948966)
+        self.assertEqual(calc_dihedral(v1, v2, v3, v4), 1.5707963267948966)
+        ref = refmat(v1, v3)
+        rot = rotmat(v1, v3)
+        self.assertTrue(numpy.array_equal(ref[0], numpy.array([1.0, 0.0, 0.0])))
+        self.assertTrue(numpy.array_equal(ref[1], numpy.array([0.0, 2.220446049250313e-16, 0.9999999999999998])))
+        self.assertTrue(numpy.array_equal(ref[2], numpy.array([0.0, 0.9999999999999998, 2.220446049250313e-16])))
+        self.assertTrue(numpy.array_equal(rot[0], numpy.array([1.0, 0.0, 0.0])))
+        self.assertTrue(numpy.array_equal(rot[1], numpy.array([0.0, 2.220446049250313e-16, 0.9999999999999998])))
+        self.assertTrue(numpy.array_equal(rot[2], numpy.array([0.0, -0.9999999999999998, -2.220446049250313e-16])))
+        self.assertTrue(numpy.array_equal(v1.left_multiply(ref).get_array(), numpy.array([0.0, 0.9999999999999998, 2.220446049250313e-16])))
+        self.assertTrue(numpy.array_equal(v1.left_multiply(rot).get_array(), numpy.array([0.0, 0.9999999999999998, -2.220446049250313e-16])))
+        self.assertTrue(numpy.array_equal(v1.right_multiply(numpy.transpose(rot)).get_array(), numpy.array([0.0, 0.9999999999999998, -2.220446049250313e-16])))
+        self.assertTrue(numpy.array_equal((v1 - v2).get_array(), numpy.array([0.0, 0.0, 1.0])))
+        self.assertTrue(numpy.array_equal((v1 - 1).get_array(), numpy.array([-1.0, -1.0, 0.0])))
+        self.assertTrue(numpy.array_equal((v1 - (1, 2, 3)).get_array(), numpy.array([-1.0, -2.0, -2.0])))
+        self.assertTrue(numpy.array_equal((v1 + v2).get_array(), numpy.array([0.0, 0.0, 1.0])))
+        self.assertTrue(numpy.array_equal((v1 + 3).get_array(), numpy.array([3.0, 3.0, 4.0])))
+        self.assertTrue(numpy.array_equal((v1 + (1, 2, 3)).get_array(), numpy.array([1.0, 2.0, 4.0])))
+        self.assertTrue(numpy.array_equal(v1.get_array() / 2, numpy.array([0, 0, 0.5])))
+        self.assertTrue(numpy.array_equal(v1.get_array() / 2, numpy.array([0, 0, 0.5])))
+        self.assertEqual(v1 * v2, 0.0)
+        self.assertTrue(numpy.array_equal((v1 ** v2).get_array(), numpy.array([0.0, -0.0, 0.0])))
+        self.assertTrue(numpy.array_equal((v1 ** 2).get_array(), numpy.array([0.0, 0.0, 2.0])))
+        self.assertTrue(numpy.array_equal((v1 ** (1, 2, 3)).get_array(), numpy.array([0.0, 0.0, 3.0])))
+        self.assertEqual(v1.norm(), 1.0)
+        self.assertEqual(v1.normsq(), 1.0)
+        v1[2] = 10
+        self.assertEqual(v1.__getitem__(2), 10)
+
+    def test_Vector_angles(self):
+        angle = random() * numpy.pi
+        axis = Vector(random(3) - random(3))
+        axis.normalize()
+        m = rotaxis(angle, axis)
+        cangle, caxis = m2rotaxis(m)
+        self.assertAlmostEqual(angle, cangle, places=3)
+        self.assertTrue(numpy.allclose(list(map(int, (axis - caxis).get_array())), [0, 0, 0]),
+                        "Want %r and %r to be almost equal" % (axis.get_array(), caxis.get_array()))
+
+
+class StructureAlignTests(unittest.TestCase):
+
+    def test_StructAlign(self):
+        """Tests on module to align two proteins according to a FASTA alignment file."""
+        al_file = "PDB/alignment_file.fa"
+        pdb2 = "PDB/1A8O.pdb"
+        pdb1 = "PDB/2XHE.pdb"
+        with open(al_file, 'r') as handle:
+            records = AlignIO.read(handle, "fasta")
+        p = PDBParser()
+        s1 = p.get_structure('1', pdb1)
+        p = PDBParser()
+        s2 = p.get_structure('2', pdb2)
+        m1 = s1[0]
+        m2 = s2[0]
+        al = StructureAlignment(records, m1, m2)
+        self.assertFalse(al.map12 == al.map21)
+        self.assertTrue(len(al.map12), 566)
+        self.assertTrue(len(al.map21), 70)
+        chain1_A = m1["A"]
+        chain2_A = m2["A"]
+        self.assertEqual(chain1_A[202].get_resname(), 'ILE')
+        self.assertEqual(chain2_A[202].get_resname(), 'LEU')
+        self.assertEqual(chain1_A[291].get_resname(), chain2_A[180].get_resname())
+        self.assertNotEqual(chain1_A[291].get_resname(), chain2_A[181].get_resname())
+
+
+class SuperimposerTests(unittest.TestCase):
+
+    def test_Superimposer(self):
+        """Test on module that superimpose two protein structures."""
+        pdb1 = "PDB/1A8O.pdb"
+        p = PDBParser()
+        s1 = p.get_structure("FIXED", pdb1)
+        fixed = Selection.unfold_entities(s1, "A")
+        s2 = p.get_structure("MOVING", pdb1)
+        moving = Selection.unfold_entities(s2, "A")
+        rot = numpy.identity(3).astype('f')
+        tran = numpy.array((1.0, 2.0, 3.0), 'f')
+        for atom in moving:
+            atom.transform(rot, tran)
+        sup = Superimposer()
+        sup.set_atoms(fixed, moving)
+        self.assertTrue(numpy.allclose(sup.rotran[0], numpy.identity(3)))
+        self.assertTrue(numpy.allclose(sup.rotran[1], numpy.array([-1.0, -2.0, -3.0])))
+        self.assertAlmostEqual(sup.rms, 0.0, places=3)
+        atom_list = ['N', 'C', 'C', 'O', 'C', 'C', 'SE', 'C', 'N', 'C', 'C',
+                     'O', 'C', 'C', 'O', 'O', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'N', 'C',
+                     'N', 'N', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'O', 'N',
+                     'N', 'C', 'C', 'O', 'N', 'C', 'C', 'O', 'C', 'C', 'C',
+                     'N', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'N', 'N', 'C',
+                     'C', 'O', 'C', 'C', 'C', 'O', 'O', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'C',
+                     'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'N',
+                     'C', 'N', 'N', 'N', 'C', 'C', 'O', 'C', 'C', 'O', 'O',
+                     'N', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'C', 'C', 'C',
+                     'O', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'N', 'C', 'C',
+                     'O', 'C', 'C', 'O', 'O', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'N', 'C', 'N', 'N', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'C', 'C', 'C', 'C', 'O', 'N', 'C', 'C', 'O', 'C',
+                     'C', 'C', 'C', 'N', 'N', 'C', 'C', 'O', 'C', 'O', 'C',
+                     'N', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'N', 'C', 'C',
+                     'O', 'C', 'C', 'C', 'N', 'C', 'N', 'N', 'N', 'C', 'C',
+                     'O', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'O', 'O',
+                     'N', 'C', 'C', 'O', 'C', 'C', 'C', 'O', 'N', 'N', 'C',
+                     'C', 'O', 'C', 'N', 'C', 'C', 'O', 'C', 'O', 'N', 'C',
+                     'C', 'O', 'C', 'C', 'C', 'O', 'N', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'C', 'O', 'O', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'C', 'N', 'N',
+                     'C', 'C', 'O', 'C', 'C', 'O', 'N', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'C', 'C', 'N', 'C', 'C', 'C', 'C', 'C', 'N',
+                     'C', 'C', 'O', 'C', 'C', 'SE', 'C', 'N', 'C', 'C', 'O',
+                     'C', 'O', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'O',
+                     'O', 'N', 'C', 'C', 'O', 'C', 'O', 'C', 'N', 'C', 'C',
+                     'O', 'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'N', 'C',
+                     'C', 'O', 'C', 'C', 'C', 'O', 'N', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'O', 'N', 'N', 'C', 'C', 'O', 'C', 'N', 'C',
+                     'C', 'O', 'C', 'C', 'O', 'N', 'N', 'C', 'C', 'O', 'C',
+                     'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'O', 'O', 'N',
+                     'C', 'C', 'O', 'C', 'S', 'N', 'C', 'C', 'O', 'C', 'C',
+                     'C', 'C', 'N', 'N', 'C', 'C', 'O', 'C', 'O', 'C', 'N',
+                     'C', 'C', 'O', 'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C', 'C', 'C',
+                     'C', 'N', 'N', 'C', 'C', 'O', 'C', 'N', 'C', 'C', 'O',
+                     'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'N', 'C', 'C',
+                     'O', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'N', 'C', 'C',
+                     'O', 'C', 'N', 'C', 'C', 'O', 'C', 'O', 'C', 'N', 'C',
+                     'C', 'O', 'C', 'C', 'C', 'C', 'N', 'C', 'C', 'O', 'C',
+                     'C', 'C', 'O', 'O', 'N', 'C', 'C', 'O', 'C', 'C', 'C',
+                     'O', 'O', 'N', 'C', 'C', 'O', 'C', 'C', 'SE', 'C', 'N',
+                     'C', 'C', 'O', 'C', 'C', 'SE', 'C', 'N', 'C', 'C', 'O',
+                     'C', 'O', 'C', 'N', 'C', 'C', 'O', 'C', 'N', 'C', 'C',
+                     'O', 'C', 'S', 'N', 'C', 'C', 'O', 'C', 'C', 'C', 'O',
+                     'N', 'N', 'C', 'C', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O', 'O',
+                     'O', 'O', 'O', 'O', 'O', 'O']
+        sup.apply(moving)
+        atom_moved = []
+        for aa in moving:
+            atom_moved.append(aa.element)
+        self.assertEqual(atom_moved, atom_list)
+
 
 class CopyTests(unittest.TestCase):
 
@@ -1084,14 +1344,14 @@ class CopyTests(unittest.TestCase):
 
 
 def eprint(*args, **kwargs):
-    '''Helper function that prints to stderr.'''
+    """Helper function that prints to stderr."""
     print(*args, file=sys.stderr, **kwargs)
 
 
 def will_it_float(s):
-    '''
-    Helper function that converts the input into a float if it is a number.
-    Otherwise if the input is a string it is returned as it is.'''
+    """ Helper function that converts the input into a float if it is a number.
+
+    If the input is a string, the output does not change."""
     try:
         return float(s)
     except ValueError:
@@ -1135,9 +1395,7 @@ class DsspTests(unittest.TestCase):
         self.assertEqual((dssp_indices & hb_indices), hb_indices)
 
     def test_DSSP_in_model_obj(self):
-        '''
-        Test that all the elements are added correctly to the xtra attribute of the input model object.
-        '''
+        """ Test that all the elements are added correctly to the xtra attribute of the input model object."""
         p = PDBParser()
         s = p.get_structure("example", "PDB/2BEG.pdb")
         m = s[0]
@@ -1231,6 +1489,35 @@ class NACCESSTests(unittest.TestCase):
         with open("PDB/1A8O.asa") as asa:
             naccess = process_asa_data(asa)
         self.assertEqual(len(naccess), 524)
+
+
+class ResidueDepthTests(unittest.TestCase):
+    """Tests for ResidueDepth module, except for running MSMS itself.
+    """
+
+    def test_pdb_to_xyzr(self):
+        """Test generation of xyzr (atomic radii) file"""
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", PDBConstructionWarning)
+            p = PDBParser(PERMISSIVE=1)
+            structure = p.get_structure("example", "PDB/1A8O.pdb")
+
+        # Read radii produced with original shell script
+        with open('PDB/1A8O.xyzr') as handle:
+            msms_radii = []
+            for line in handle:
+                fields = line.split()
+                radius = float(fields[3])
+                msms_radii.append(radius)
+
+        model = structure[0]
+        biopy_radii = []
+        for atom in model.get_atoms():
+            biopy_radii.append(_get_atom_radius(atom, rtype='united'))
+
+        assert len(msms_radii) == len(biopy_radii)
+        self.assertSequenceEqual(msms_radii, biopy_radii)
 
 if __name__ == '__main__':
     runner = unittest.TextTestRunner(verbosity=2)

@@ -30,6 +30,9 @@ dist
 #Ignore all Jython class files (present if using Jython)
 *.class
 
+#Ignore the .tox directory from running tox locally
+.tox/
+
 #Ignore the MANIFEST file created automatically from MANIFEST.in
 MANIFEST
 
@@ -49,6 +52,10 @@ Tests/biosql.ini
 #TODO - The unit tests shouldn't leave temp files after running:
 Tests/BioSQL/temp_sqlite.db
 Tests/BioSQL/temp_sqlite.db-journal
+
+#TODO - The Tutorial doctests should leave example files after
+#running Tests/test_Tutorial.py
+Doc/examples/other_trees.nwk
 
 #Ignore LaTeX temp files, and compiled output
 Doc/*.aux

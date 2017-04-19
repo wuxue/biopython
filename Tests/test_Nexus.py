@@ -1,7 +1,8 @@
 # Copyright 2005 by Iddo Friedberg.  All rights reserved.
-# Revisions copyright 2006-2013 by Peter Cock. All rights reserved.
+# Revisions copyright 2006-2013,2017 by Peter Cock. All rights reserved.
 # Revisions copyright 2008 by Frank Kauff. All rights reserved.
 # Revisions copyright 2009 by Michiel de Hoon. All rights reserved.
+# Revisions copyright 2015 by Joe Cora. All rights reserved.
 # This code is part of the Biopython distribution and governed by its
 # license.  Please see the LICENSE file that should have been included
 # as part of this package.
@@ -13,7 +14,8 @@ import tempfile
 import sys
 from Bio._py3k import StringIO
 from Bio._py3k import range
-
+from Bio.Align import MultipleSeqAlignment
+from Bio.AlignIO.NexusIO import NexusIterator, NexusWriter
 from Bio.SeqRecord import SeqRecord
 from Bio.Nexus import Nexus, Trees
 from Bio.Seq import Seq
@@ -21,11 +23,49 @@ from Bio.Alphabet.IUPAC import ambiguous_dna
 from Bio import SeqIO
 
 
+class OldSelfTests(unittest.TestCase):
+    """Test cases originally in Nexus.py via __main__"""
+
+    def test_trees_and_taxa_block(self):
+        """Basic tree file with TREES and TAXA block"""
+        nexus1 = Nexus.Nexus()
+        nexus1.read('Nexus/bats.nex')
+
+    def test_data_and_codons_block(self):
+        """Simple sequence data file with DATA and CODONS block"""
+        nexus2 = Nexus.Nexus()
+        nexus2.read('Nexus/codonposset.nex')
+
+    def test_data_sets_trees_unknown_block(self):
+        """Sequence data file with DATA, SETS, TREES and an unknown block"""
+        nexus3 = Nexus.Nexus()
+        nexus3.read('Nexus/test_Nexus_input.nex')
+
+    def test_taxa_and_characters_block(self):
+        """Taxa and characters multi-state block"""
+        nexus4 = Nexus.Nexus()
+        nexus4.read('Nexus/vSysLab_Ganaspidium_multistate.nex')
+
+    def test_taxa_and_characters_with_many_codings_one_without_state(self):
+        """Taxa and chr blocks, over 9 codings, 1 character without states"""
+        nexus5 = Nexus.Nexus()
+        nexus5.read('Nexus/vSysLab_Heptascelio_no-states_10+chars.nex')
+
+    def test_taxa_and_characters_with_many_codings_two_without_state(self):
+        """Taxa and chr blocks, over 9 codings, 2 character without states"""
+        nexus6 = Nexus.Nexus()
+        # TODO: Implement continuous datatype:
+        # Bio.Nexus.Nexus.NexusError: Unsupported datatype: continuous
+        self.assertRaises(Nexus.NexusError,
+                          nexus6.read,
+                          'Nexus/vSysLab_Oreiscelio_discrete+continuous.nex')
+
+
 class NexusTest1(unittest.TestCase):
     def setUp(self):
         self.testfile_dir = "Nexus"
         self.handle = open(os.path.join(self.testfile_dir,
-            "test_Nexus_input.nex"))
+                                        "test_Nexus_input.nex"))
 
     def tearDown(self):
         self.handle.close()
@@ -121,8 +161,8 @@ class NexusTest1(unittest.TestCase):
                              't2 the name'],
                 })
         self.assertEqual(len(n.charpartitions), 2)
-        self.assertTrue('codons' in n.charpartitions)
-        self.assertTrue('part' in n.charpartitions)
+        self.assertIn('codons', n.charpartitions)
+        self.assertIn('part', n.charpartitions)
         self.assertEqual(n.charpartitions['codons'],
                          {'a': [0, 3, 6, 9, 12, 15, 18, 21, 24, 27, 30, 33, 36, 39, 42, 45],
                           'b': [1, 4, 7, 10, 13, 16, 19, 22, 25, 28, 31, 34, 37, 40, 43, 46],
@@ -200,8 +240,8 @@ class NexusTest1(unittest.TestCase):
                 'tbyname3': ['t2 the name'],
                 })
         self.assertEqual(len(nf1.charpartitions), 2)
-        self.assertTrue('codons' in nf1.charpartitions)
-        self.assertTrue('part' in nf1.charpartitions)
+        self.assertIn('codons', nf1.charpartitions)
+        self.assertIn('part', nf1.charpartitions)
         self.assertEqual(nf1.charpartitions['codons'], {'a': [0, 3],
                                                         'b': [2],
                                                         'c': [1]})
@@ -291,8 +331,8 @@ class NexusTest1(unittest.TestCase):
                           "tbyname3": ['t1',
                                        't2 the name']})
         self.assertEqual(len(nf2.charpartitions), 2)
-        self.assertTrue('codons' in nf2.charpartitions)
-        self.assertTrue('part' in nf2.charpartitions)
+        self.assertIn('codons', nf2.charpartitions)
+        self.assertIn('part', nf2.charpartitions)
         self.assertEqual(nf2.charpartitions['codons'],
                          {"a": [0, 5, 7, 9, 14, 16, 18, 23, 25, 27, 32, 35],
                           "b": [1, 3, 8, 10, 12, 17, 19, 21, 26, 28, 30, 33, 36],
@@ -438,6 +478,80 @@ Root:  16
                           (None, 0.20039426358269385, None, '[&height_95%_HPD={0.3110921040545068,0.38690865205576275},length_range={0.09675588357303178,0.4332959544380489},length_95%_HPD={0.16680375169879613,0.36500804261814374}]'),
                           ('9', 0.055354097721950546, None, '[&rate_range={1.3E-5,0.10958320752991428},height_95%_HPD={0.309132419999969,0.3091324199999691},length_range={3.513906814545109E-4,0.4381986285528381},height_median=0.309132419999969,length_95%_HPD={0.003011577063374571,0.08041621647998398}]'),
                           ('5', 0.055354097721950546, None, '[&rate_range={1.3E-5,0.10958320752991428},height_95%_HPD={0.309132419999969,0.3091324199999691},length_range={3.865051168833178E-5,0.4391594442572986},height_median=0.309132419999969,length_95%_HPD={0.003011577063374571,0.08041621647998398}]')])
+
+
+class TestSelf(unittest.TestCase):
+    def test_repeated_names_no_taxa(self):
+        print("Repeated names without a TAXA block")
+        handle = StringIO("""#NEXUS
+        [TITLE: NoName]
+        begin data;
+        dimensions ntax=4 nchar=50;
+        format interleave datatype=protein   gap=- symbols="FSTNKEYVQMCLAWPHDRIG";
+        matrix
+        CYS1_DICDI          -----MKVIL LFVLAVFTVF VSS------- --------RG IPPEEQ----
+        ALEU_HORVU          MAHARVLLLA LAVLATAAVA VASSSSFADS NPIRPVTDRA ASTLESAVLG
+        CATH_HUMAN          ------MWAT LPLLCAGAWL LGV------- -PVCGAAELS VNSLEK----
+        CYS1_DICDI          -----MKVIL LFVLAVFTVF VSS------- --------RG IPPEEQ---X
+        ;
+        end;
+        """)  # noqa for pep8 W291 trailing whitespace
+        for a in NexusIterator(handle):
+            print(a)
+            for r in a:
+                print("%r %s %s" % (r.seq, r.name, r.id))
+        print("Done")
+
+    def test_repeated_names_with_taxa(self):
+
+        print("Repeated names with a TAXA block")
+        handle = StringIO("""#NEXUS
+        [TITLE: NoName]
+        begin taxa
+        CYS1_DICDI
+        ALEU_HORVU
+        CATH_HUMAN
+        CYS1_DICDI;
+        end;
+        begin data;
+        dimensions ntax=4 nchar=50;
+        format interleave datatype=protein   gap=- symbols="FSTNKEYVQMCLAWPHDRIG";
+        matrix
+        CYS1_DICDI          -----MKVIL LFVLAVFTVF VSS------- --------RG IPPEEQ----
+        ALEU_HORVU          MAHARVLLLA LAVLATAAVA VASSSSFADS NPIRPVTDRA ASTLESAVLG
+        CATH_HUMAN          ------MWAT LPLLCAGAWL LGV------- -PVCGAAELS VNSLEK----
+        CYS1_DICDI          -----MKVIL LFVLAVFTVF VSS------- --------RG IPPEEQ---X
+        ;
+        end;
+        """)  # noqa for pep8 W291 trailing whitespace
+        for a in NexusIterator(handle):
+            print(a)
+            for r in a:
+                print("%r %s %s" % (r.seq, r.name, r.id))
+        print("Done")
+
+    def test_empty_file_read(self):
+        self.assertEqual([], list(NexusIterator(StringIO())))
+
+    def test_multiple_output(self):
+        records = [SeqRecord(Seq("ATGCTGCTGAT", alphabet=ambiguous_dna), id="foo"),
+                   SeqRecord(Seq("ATGCTGCAGAT", alphabet=ambiguous_dna), id="bar"),
+                   SeqRecord(Seq("ATGCTGCGGAT", alphabet=ambiguous_dna), id="baz")]
+        a = MultipleSeqAlignment(records, alphabet=ambiguous_dna)
+
+        handle = StringIO()
+        NexusWriter(handle).write_file([a])
+        handle.seek(0)
+        data = handle.read()
+        self.assertTrue(data.startswith("#NEXUS\nbegin data;\n"), data)
+        self.assertTrue(data.endswith("end;\n"), data)
+
+        handle = StringIO()
+        try:
+            NexusWriter(handle).write_file([a, a])
+            assert False, "Should have rejected more than one alignment!"
+        except ValueError:
+            pass
 
 
 if __name__ == "__main__":

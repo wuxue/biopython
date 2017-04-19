@@ -17,7 +17,7 @@ class StructureDecoder(object):
         :param total_num_groups: the number of groups in the structure
         :param total_num_chains: the number of chains in the structure
         :param total_num_models: the number of models in the structure
-        :param structure_id the: id of the structure (e.g. PDB id)
+        :param structure_id: the id of the structure (e.g. PDB id)
         """
         self.structure_bulder = StructureBuilder()
         self.structure_bulder.init_structure(structure_id=structure_id)
@@ -41,6 +41,11 @@ class StructureDecoder(object):
         :param element: the element of the atom, e.g. C for carbon. According to IUPAC. Calcium  is Ca
         :param charge: the formal atomic charge of the atom
         """
+        # MMTF uses "\x00" (the NUL character) to indicate to altloc, so convert
+        # that to the space required by StructureBuilder
+        if alternative_location_id == "\x00":
+            alternative_location_id = " "
+
         # Atom_name is in twice - the full_name is with spaces
         self.structure_bulder.init_atom(str(atom_name), [x, y, z],
                                         temperature_factor, occupancy,
@@ -59,7 +64,7 @@ class StructureDecoder(object):
         # with current BioPython. Chain_id might be better.
         self.structure_bulder.init_chain(chain_id=chain_name)
         if self.chain_index_to_type_map[self.chain_counter] == "polymer":
-            self.this_type = ""
+            self.this_type = " "
         elif self.chain_index_to_type_map[self.chain_counter] == "non-polymer":
             self.this_type = "H"
         elif self.chain_index_to_type_map[self.chain_counter] == "water":
@@ -88,14 +93,19 @@ class StructureDecoder(object):
         :param group_number: the residue number of this group
         :param insertion_code: the insertion code for this group
         :param group_type: a string indicating the type of group (as found in the chemcomp dictionary.
-        Empty string if none available.
+            Empty string if none available.
         :param atom_count: the number of atoms in the group
         :param bond_count: the number of unique bonds in the group
         :param single_letter_code: the single letter code of the group
         :param sequence_index: the index of this group in the sequence defined by the enttiy
-        :param secondary_structure_type: the type of secondary structure used (types are according to DSSP and
-        number to type mappings are defined in the specification)
+        :param secondary_structure_type: the type of secondary structure used
+            (types are according to DSSP and number to type mappings are defined in the specification)
         """
+        # MMTF uses a NUL character to indicate a blank insertion code, but
+        # StructureBuilder expects a space instead.
+        if insertion_code == "\x00":
+            insertion_code = " "
+
         self.structure_bulder.init_seg(' ')
         self.structure_bulder.init_residue(group_name, self.this_type,
                                            group_number, insertion_code)
@@ -136,7 +146,7 @@ class StructureDecoder(object):
 
         :param bio_assembly_index: the integer index of the bioassembly
         :param input_chain_indices: the list of integer indices for the chains of this bioassembly
-        :param input_transformation: the list of doubles for  the transform of this bioassmbly transform"""
+        :param input_transform: the list of doubles for  the transform of this bioassmbly transform"""
         pass
 
     def finalize_structure(self):
@@ -157,6 +167,6 @@ class StructureDecoder(object):
 
         :param atom_index_one: the integer atom index (in the structure) of the first partner in the bond
         :param atom_index_two: the integer atom index (in the structure) of the second partner in the bond
-        :param bond_order the bond order
+        :param bond_order: the bond order
         """
         pass

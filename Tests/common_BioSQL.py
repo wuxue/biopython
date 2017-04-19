@@ -27,7 +27,7 @@ from Bio import BiopythonWarning
 # local stuff
 from Bio import MissingExternalDependencyError
 from Bio.Seq import Seq, MutableSeq
-from Bio.SeqFeature import SeqFeature
+from Bio.SeqFeature import SeqFeature, UnknownPosition, ExactPosition
 from Bio import Alphabet
 from Bio import SeqIO
 from Bio.SeqRecord import SeqRecord
@@ -226,7 +226,6 @@ def load_database(gb_filename_or_handle):
 
     This is useful for running tests against a newly created database.
     """
-
     TESTDB = create_database()
     # now open a connection to load the database
     db_name = "biosql-test"
@@ -249,7 +248,6 @@ def load_multi_database(gb_filename_or_handle, gb_filename_or_handle2):
 
     This is useful for running tests against a newly created database.
     """
-
     TESTDB = create_database()
     # now open a connection to load the database
     db_name = "biosql-test"
@@ -304,8 +302,8 @@ class MultiReadTest(unittest.TestCase):
     def test_server(self):
         """Check BioSeqDatabase methods"""
         server = self.server
-        self.assertTrue("biosql-test" in server)
-        self.assertTrue("biosql-test2" in server)
+        self.assertIn("biosql-test", server)
+        self.assertIn("biosql-test2", server)
         self.assertEqual(2, len(server))
         self.assertEqual(["biosql-test", 'biosql-test2'], list(server.keys()))
         # Check we can delete the namespace...
@@ -380,7 +378,7 @@ class ReadTest(unittest.TestCase):
     def test_server(self):
         """Check BioSeqDatabase methods"""
         server = self.server
-        self.assertTrue("biosql-test" in server)
+        self.assertIn("biosql-test", server)
         self.assertEqual(1, len(server))
         self.assertEqual(["biosql-test"], list(server.keys()))
         # Check we can delete the namespace...
@@ -559,11 +557,11 @@ class SeqInterfaceTest(unittest.TestCase):
             raise KeyError("Missing expected entries, have %s"
                            % repr(cds_feature.qualifiers))
 
-        self.assertTrue("db_xref" in cds_feature.qualifiers)
+        self.assertIn("db_xref", cds_feature.qualifiers)
         multi_ann = cds_feature.qualifiers["db_xref"]
         self.assertEqual(len(multi_ann), 2)
-        self.assertTrue("GI:16354" in multi_ann)
-        self.assertTrue("SWISS-PROT:P31169" in multi_ann)
+        self.assertIn("GI:16354", multi_ann)
+        self.assertIn("SWISS-PROT:P31169", multi_ann)
 
 
 class LoaderTest(unittest.TestCase):
@@ -647,7 +645,7 @@ class DeleteTest(unittest.TestCase):
     def test_server(self):
         """Check BioSeqDatabase methods"""
         server = self.server
-        self.assertTrue("biosql-test" in server)
+        self.assertIn("biosql-test", server)
         self.assertEqual(1, len(server))
         self.assertEqual(["biosql-test"], list(server.keys()))
         # Check we can delete the namespace...
@@ -755,8 +753,11 @@ class DupLoadTest(unittest.TestCase):
 class ClosedLoopTest(unittest.TestCase):
     """Test file -> BioSQL -> file."""
 
-    # NOTE - For speed I don't bother to create a new database each time,
-    # simply a new unique namespace is used for each test.
+    @classmethod
+    def setUpClass(cls):
+        # NOTE - For speed I don't bother to create a new database each time,
+        # simply a new unique namespace is used for each test.
+        TESTDB = create_database()
 
     def test_NC_005816(self):
         """GenBank file to BioSQL and back to a GenBank file, NC_005816."""
@@ -1037,6 +1038,11 @@ class AutoSeqIOTests(unittest.TestCase):
     server = None
     db = None
 
+    @classmethod
+    def setUpClass(cls):
+        # Create and reuse on database for all tests in this class
+        TESTDB = create_database()
+
     def setUp(self):
         """Connect to the database."""
         db_name = "biosql-test-seqio"
@@ -1161,3 +1167,39 @@ class AutoSeqIOTests(unittest.TestCase):
         self.check('embl', 'EMBL/SC10H5.embl')
         self.check('embl', 'EMBL/U87107.embl')
         self.assertEqual(len(self.db), 66)
+
+
+class SwissProtUnknownPositionTest(unittest.TestCase):
+    """Handle SwissProt unknown position by setting value to null in database."""
+
+    def setUp(self):
+        # drop any old database and create a new one:
+        TESTDB = create_database()
+        # connect to new database:
+        self.server = BioSeqDatabase.open_database(driver=DBDRIVER,
+                                                   user=DBUSER, passwd=DBPASSWD,
+                                                   host=DBHOST, db=TESTDB)
+        # Create new namespace within new empty database:
+        self.db = self.server.new_database("biosql-test")
+
+    def tearDown(self):
+        self.server.rollback()
+        self.server.close()
+        destroy_database()
+        del self.db
+        del self.server
+
+    def test_ambiguous_location(self):
+        """Parse a uniprot-xml file that includes ambiguous location, save it, and then return"""
+        id = 'P97881'
+        seqiter = SeqIO.parse("SwissProt/%s.xml" % id, "uniprot-xml")
+        self.assertTrue(self.db.load(seqiter) == 1)
+
+        dbrecord = self.db.lookup(primary_id=id)
+        for feature in dbrecord.features:
+            if feature.type == 'signal peptide':
+                self.assertTrue(isinstance(feature.location.end, UnknownPosition))
+            elif feature.type == 'chain':
+                self.assertTrue(isinstance(feature.location.start, UnknownPosition))
+            else:
+                self.assertTrue(isinstance(feature.location.start, ExactPosition))

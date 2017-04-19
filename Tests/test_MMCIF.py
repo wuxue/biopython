@@ -9,6 +9,7 @@
 
 """Unit tests for the MMCIF portion of the Bio.PDB module."""
 
+import tempfile
 import unittest
 import warnings
 
@@ -29,6 +30,7 @@ from Bio.PDB.PDBExceptions import PDBConstructionException, PDBConstructionWarni
 
 from Bio.PDB import PPBuilder, CaPPBuilder
 from Bio.PDB.MMCIFParser import MMCIFParser, FastMMCIFParser
+from Bio.PDB import PDBParser, PDBIO
 
 
 class ParseReal(unittest.TestCase):
@@ -202,6 +204,85 @@ class ParseReal(unittest.TestCase):
 
         structure = parser.get_structure("example", open("PDB/1A8O.cif"))
         self.assertEqual(len(structure), 1)
+
+    def test_point_mutations_main(self):
+        """Test if MMCIFParser parse point mutations correctly."""
+        self._run_point_mutation_tests(MMCIFParser(QUIET=True))
+
+    def test_point_mutations_fast(self):
+        """Test if FastMMCIFParser can parse point mutations correctly."""
+        self._run_point_mutation_tests(FastMMCIFParser(QUIET=True))
+
+    def _run_point_mutation_tests(self, parser):
+        """Common test code for testing point mutations."""
+        structure = parser.get_structure("example", "PDB/3JQH.cif")
+
+        # Residue 1 and 15 should be disordered.
+        res_1 = structure[0]["A"][1]
+        res_15 = structure[0]["A"][15]
+
+        # Cursory check -- this would be true even if the residue just
+        # contained some disordered atoms.
+        self.assertTrue(res_1.is_disordered(), "Residue 1 is disordered")
+        self.assertTrue(res_15.is_disordered(), "Residue 15 is disordered")
+
+        # Check a non-mutated residue just to be sure we didn't break the
+        # parser and cause everyhing to be disordered.
+        self.assertFalse(
+            structure[0]["A"][13].is_disordered(),
+            "Residue 13 is not disordered")
+
+        # Check that the residue types were parsed correctly.
+        self.assertSetEqual(
+            set(res_1.disordered_get_id_list()),
+            {"PRO", "SER"},
+            "Residue 1 is proline/serine")
+        self.assertSetEqual(
+            set(res_15.disordered_get_id_list()),
+            {"ARG", "GLN", "GLU"},
+            "Residue 15 is arginine/glutamine/glutamic acid")
+
+        # Quickly check that we can switch between residues and that the
+        # correct set of residues was parsed.
+        res_1.disordered_select('PRO')
+        self.assertAlmostEqual(
+            res_1["CA"].get_occupancy(),
+            0.83, 2, "Residue 1 proline occupancy correcy")
+
+        res_1.disordered_select('SER')
+        self.assertAlmostEqual(
+            res_1["CA"].get_occupancy(),
+            0.17, 2, "Residue 1 serine occupancy correcy")
+
+
+class CIFtoPDB(unittest.TestCase):
+    """Testing conversion between formats: CIF to PDB"""
+
+    def test_conversion(self):
+        """Parse 1A8O.cif, write 1A8O.pdb, parse again and compare"""
+
+        cif_parser = MMCIFParser(QUIET=1)
+        cif_struct = cif_parser.get_structure("example", "PDB/1LCD.cif")
+
+        pdb_writer = PDBIO()
+        pdb_writer.set_structure(cif_struct)
+        filenumber, filename = tempfile.mkstemp()
+        pdb_writer.save(filename)
+
+        pdb_parser = PDBParser(QUIET=1)
+        pdb_struct = pdb_parser.get_structure('example_pdb', filename)
+
+        # comparisons
+        self.assertEqual(len(pdb_struct), len(cif_struct))
+
+        pdb_atom_names = [a.name for a in pdb_struct.get_atoms()]
+        cif_atom_names = [a.name for a in pdb_struct.get_atoms()]
+        self.assertEqual(len(pdb_atom_names), len(cif_atom_names))
+        self.assertSequenceEqual(pdb_atom_names, cif_atom_names)
+
+        pdb_atom_elems = [a.element for a in pdb_struct.get_atoms()]
+        cif_atom_elems = [a.element for a in pdb_struct.get_atoms()]
+        self.assertSequenceEqual(pdb_atom_elems, cif_atom_elems)
 
 if __name__ == '__main__':
     runner = unittest.TextTestRunner(verbosity=2)

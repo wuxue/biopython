@@ -30,6 +30,8 @@ from Bio._py3k import _is_int_or_long
 from Bio._py3k import range
 from Bio._py3k import basestring
 
+from Bio.SeqFeature import UnknownPosition
+
 
 class DatabaseLoader(object):
     """Object used to load SeqRecord objects into a BioSQL database."""
@@ -104,7 +106,6 @@ class DatabaseLoader(object):
 
         The ontology_id should be used to disambiguate the term.
         """
-
         # try to get the term id
         sql = r"SELECT term_id FROM term " \
               r"WHERE name = %s"
@@ -155,7 +156,6 @@ class DatabaseLoader(object):
         will populate and update the taxon/taxon_name tables
         with the latest information from the NCBI.
         """
-
         # To find the NCBI taxid, first check for a top level annotation
         ncbi_taxon_id = None
         if "ncbi_taxid" in record.annotations:
@@ -767,7 +767,6 @@ class DatabaseLoader(object):
         record - a SeqRecord object with annotated references
         bioentry_id - corresponding database identifier
         """
-
         refs = None
         if reference.medline_id:
             refs = self.adaptor.execute_and_fetch_col0(
@@ -911,8 +910,24 @@ class DatabaseLoader(object):
         # convert biopython locations to the 1-based location system
         # used in bioSQL
         # XXX This could also handle fuzzies
-        start = int(location.start) + 1
-        end = int(location.end)
+
+        try:
+            start = int(location.start) + 1
+        except TypeError:
+            # Handle SwissProt unknown position (?)
+            if isinstance(location.start, UnknownPosition):
+                start = None
+            else:
+                raise
+
+        try:
+            end = int(location.end)
+        except TypeError:
+            # Handle SwissProt unknown position (?)
+            if isinstance(location.end, UnknownPosition):
+                end = None
+            else:
+                raise
 
         # Biopython uses None when we don't know strand information but
         # BioSQL requires something (non null) and sets this as zero

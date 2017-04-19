@@ -127,7 +127,7 @@ class SeqRecordMethods(unittest.TestCase):
             break
 
     def test_contains(self):
-        self.assertTrue(Seq("ABC", generic_protein) in self.record)
+        self.assertIn(Seq("ABC", generic_protein), self.record)
 
     def test_str(self):
         expected = """
@@ -346,7 +346,7 @@ Seq('ABCDEFGHIJKLMNOPQRSTUVWZYX', ProteinAlphabet())"""
         s = SeqRecord(MutableSeq("ACTG"))
         self.assertEqual("CAGT", str(s.reverse_complement().seq))
 
-    def test_gt_exception(self):
+    def test_lt_exception(self):
         def lt():
             SeqRecord(Seq("A")) < SeqRecord(Seq("A"))
         self.assertRaises(NotImplementedError, lt)

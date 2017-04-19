@@ -275,7 +275,7 @@ def _insdc_location_string(location, rec_length):
                             for p in parts[::-1]))
         else:
             return "%s(%s)" % (location.operator,
-                   ",".join(_insdc_location_string(p, rec_length) for p in parts))
+                               ",".join(_insdc_location_string(p, rec_length) for p in parts))
     except AttributeError:
         # Simple FeatureLocation
         loc = _insdc_location_string_ignoring_strand_and_subfeatures(location, rec_length)
@@ -354,11 +354,11 @@ class _InsdcWriter(SequentialSequenceWriter):
         location = _insdc_location_string(feature.location, record_length)
         f_type = feature.type.replace(" ", "_")
         line = (self.QUALIFIER_INDENT_TMP % f_type)[:self.QUALIFIER_INDENT] \
-               + self._wrap_location(location) + "\n"
+            + self._wrap_location(location) + "\n"
         self.handle.write(line)
         # Now the qualifiers...
-        for key in sorted(feature.qualifiers.keys()):
-            values = feature.qualifiers[key]
+        # Note as of Biopython 1.69, this is an ordered-dict, don't sort it:
+        for key, values in feature.qualifiers.items():
             if isinstance(values, (list, tuple)):
                 for value in values:
                     self._write_feature_qualifier(key, value)
@@ -366,7 +366,8 @@ class _InsdcWriter(SequentialSequenceWriter):
                 # String, int, etc - or None for a /pseudo tpy entry
                 self._write_feature_qualifier(key, values)
 
-    def _get_annotation_str(self, record, key, default=".", just_first=False):
+    @staticmethod
+    def _get_annotation_str(record, key, default=".", just_first=False):
         """Get an annotation dictionary entry (as a string).
 
         Some entries are lists, in which case if just_first=True the first entry
@@ -383,7 +384,8 @@ class _InsdcWriter(SequentialSequenceWriter):
         else:
             return str(answer)
 
-    def _split_multi_line(self, text, max_len):
+    @staticmethod
+    def _split_multi_line(text, max_len):
         """Returns a list of strings.
 
         Any single words which are too long get returned as a whole line
@@ -439,6 +441,11 @@ class GenBankWriter(_InsdcWriter):
 
     HEADER_WIDTH = 12
     QUALIFIER_INDENT = 21
+    STRUCTURED_COMMENT_START = "-START##"
+    STRUCTURED_COMMENT_END = "-END##"
+    STRUCTURED_COMMENT_DELIM = " :: "
+    LETTERS_PER_LINE = 60
+    SEQUENCE_INDENT = 9
 
     def _write_single_line(self, tag, text):
         """Used in the 'header' of each GenBank record."""
@@ -471,7 +478,8 @@ class GenBankWriter(_InsdcWriter):
             else:
                 self._write_single_line("", text)
 
-    def _get_date(self, record):
+    @staticmethod
+    def _get_date(record):
         default = "01-JAN-1980"
         try:
             date = record.annotations["date"]
@@ -491,7 +499,8 @@ class GenBankWriter(_InsdcWriter):
             return default
         return date
 
-    def _get_data_division(self, record):
+    @staticmethod
+    def _get_data_division(record):
         try:
             division = record.annotations["data_file_division"]
         except KeyError:
@@ -569,7 +578,6 @@ class GenBankWriter(_InsdcWriter):
 
     def _write_the_first_line(self, record):
         """Write the LOCUS line."""
-
         locus = record.name
         if not locus or locus == "<unknown name>":
             locus = record.id
@@ -608,8 +616,20 @@ class GenBankWriter(_InsdcWriter):
             raise ValueError("Need a Nucleotide or Protein alphabet")
 
         # Get the molecule type
-        # TODO - record this explicitly in the parser?
-        if isinstance(a, Alphabet.ProteinAlphabet):
+        mol_type = self._get_annotation_str(record, "molecule_type", default=None)
+        if mol_type and len(mol_type) > 7:
+            # Deal with common cases from EMBL to GenBank
+            mol_type = mol_type.replace("unassigned ", "").replace("genomic ", "")
+            if len(mol_type) > 7:
+                warnings.warn("Molecule type %r too long" % mol_type,
+                              BiopythonWarning)
+                mol_type = None
+        if mol_type == "protein":
+            mol_type = ""
+
+        if mol_type:
+            pass
+        elif isinstance(a, Alphabet.ProteinAlphabet):
             mol_type = ""
         elif isinstance(a, Alphabet.DNAAlphabet):
             mol_type = "DNA"
@@ -723,13 +743,29 @@ class GenBankWriter(_InsdcWriter):
         # A list of lines is also reasonable.
         # A single (long) string is perhaps the most natural of all.
         # This means we may need to deal with line wrapping.
-        comment = record.annotations["comment"]
-        if isinstance(comment, basestring):
-            lines = comment.split("\n")
-        elif isinstance(comment, (list, tuple)):
-            lines = comment
-        else:
-            raise ValueError("Could not understand comment annotation")
+        lines = []
+        if "structured_comment" in record.annotations:
+            comment = record.annotations["structured_comment"]
+            # Find max length of keys for equal padded printing
+            padding = 0
+            for key, data in comment.items():
+                for subkey, subdata in data.items():
+                    padding = len(subkey) if len(subkey) > padding else padding
+            # Construct output
+            for key, data in comment.items():
+                lines.append("##{0}{1}".format(key, self.STRUCTURED_COMMENT_START))
+                for subkey, subdata in data.items():
+                    spaces = " " * (padding - len(subkey))
+                    lines.append("{0}{1}{2}{3}".format(subkey, spaces, self.STRUCTURED_COMMENT_DELIM, subdata))
+                lines.append("##{0}{1}".format(key, self.STRUCTURED_COMMENT_END))
+        if "comment" in record.annotations:
+            comment = record.annotations["comment"]
+            if isinstance(comment, basestring):
+                lines += comment.split("\n")
+            elif isinstance(comment, (list, tuple)):
+                lines += list(comment)
+            else:
+                raise ValueError("Could not understand comment annotation")
         self._write_multi_line("COMMENT", lines[0])
         for line in lines[1:]:
             self._write_multi_line("", line)
@@ -744,8 +780,6 @@ class GenBankWriter(_InsdcWriter):
     def _write_sequence(self, record):
         # Loosely based on code from Howard Salis
         # TODO - Force lower case?
-        LETTERS_PER_LINE = 60
-        SEQUENCE_INDENT = 9
 
         if isinstance(record.seq, UnknownSeq):
             # We have already recorded the length, and there is no need
@@ -760,10 +794,10 @@ class GenBankWriter(_InsdcWriter):
         data = self._get_seq_string(record).lower()
         seq_len = len(data)
         self.handle.write("ORIGIN\n")
-        for line_number in range(0, seq_len, LETTERS_PER_LINE):
-            self.handle.write(str(line_number + 1).rjust(SEQUENCE_INDENT))
+        for line_number in range(0, seq_len, self.LETTERS_PER_LINE):
+            self.handle.write(str(line_number + 1).rjust(self.SEQUENCE_INDENT))
             for words in range(line_number,
-                               min(line_number + LETTERS_PER_LINE, seq_len), 10):
+                               min(line_number + self.LETTERS_PER_LINE, seq_len), 10):
                 self.handle.write(" %s" % data[words:words + 10])
             self.handle.write("\n")
 
@@ -806,12 +840,38 @@ class GenBankWriter(_InsdcWriter):
             self._write_single_line("VERSION", "%s  GI:%s"
                                     % (acc_with_version, gi))
         else:
-            self._write_single_line("VERSION", "%s" % (acc_with_version))
+            self._write_single_line("VERSION", "%s" % acc_with_version)
 
-        # The NCBI only expect two types of link so far,
+        # The NCBI initially expected two types of link,
         # e.g. "Project:28471" and "Trace Assembly Archive:123456"
-        # TODO - Filter the dbxrefs list to just these?
-        self._write_multi_entries("DBLINK", record.dbxrefs)
+        #
+        # This changed and at some point the formatting switched to
+        # include a space after the colon, e.g.
+        #
+        # LOCUS       NC_000011               1606 bp    DNA     linear   CON 06-JUN-2016
+        # DEFINITION  Homo sapiens chromosome 11, GRCh38.p7 Primary Assembly.
+        # ACCESSION   NC_000011 REGION: complement(5225466..5227071) GPC_000001303
+        # VERSION     NC_000011.10  GI:568815587
+        # DBLINK      BioProject: PRJNA168
+        #             Assembly: GCF_000001405.33
+        # ...
+        #
+        # Or,
+        #
+        # LOCUS       JU120277                1044 bp    mRNA    linear   TSA 27-NOV-2012
+        # DEFINITION  TSA: Tupaia chinensis tbc000002.Tuchadli mRNA sequence.
+        # ACCESSION   JU120277
+        # VERSION     JU120277.1  GI:379775257
+        # DBLINK      BioProject: PRJNA87013
+        #             Sequence Read Archive: SRR433859
+        # ...
+        dbxrefs_with_space = []
+        for x in record.dbxrefs:
+            if ": " not in x:
+                x = x.replace(":", ": ")
+            dbxrefs_with_space.append(x)
+        self._write_multi_entries("DBLINK", dbxrefs_with_space)
+        del dbxrefs_with_space
 
         try:
             # List of strings
@@ -855,7 +915,7 @@ class GenBankWriter(_InsdcWriter):
         if "references" in record.annotations:
             self._write_references(record)
 
-        if "comment" in record.annotations:
+        if "comment" in record.annotations or "structured_comment" in record.annotations:
             self._write_comment(record)
 
         handle.write("FEATURES             Location/Qualifiers\n")
@@ -873,7 +933,13 @@ class EmblWriter(_InsdcWriter):
     QUALIFIER_INDENT = 21
     QUALIFIER_INDENT_STR = "FT" + " " * (QUALIFIER_INDENT - 2)
     QUALIFIER_INDENT_TMP = "FT   %s                "  # 21 if %s is empty
-    FEATURE_HEADER = "FH   Key             Location/Qualifiers\n"
+    # Note second spacer line of just FH is expected:
+    FEATURE_HEADER = "FH   Key             Location/Qualifiers\nFH\n"
+
+    LETTERS_PER_BLOCK = 10
+    BLOCKS_PER_LINE = 6
+    LETTERS_PER_LINE = LETTERS_PER_BLOCK * BLOCKS_PER_LINE
+    POSITION_PADDING = 10
 
     def _write_contig(self, record):
         max_len = self.MAX_WIDTH - self.HEADER_WIDTH
@@ -882,10 +948,6 @@ class EmblWriter(_InsdcWriter):
             self._write_single_line("CO", text)
 
     def _write_sequence(self, record):
-        LETTERS_PER_BLOCK = 10
-        BLOCKS_PER_LINE = 6
-        LETTERS_PER_LINE = LETTERS_PER_BLOCK * BLOCKS_PER_LINE
-        POSITION_PADDING = 10
         handle = self.handle  # save looking up this multiple times
 
         if isinstance(record.seq, UnknownSeq):
@@ -916,25 +978,25 @@ class EmblWriter(_InsdcWriter):
         else:
             handle.write("SQ   \n")
 
-        for line_number in range(0, seq_len // LETTERS_PER_LINE):
+        for line_number in range(0, seq_len // self.LETTERS_PER_LINE):
             handle.write("    ")  # Just four, not five
-            for block in range(BLOCKS_PER_LINE):
-                index = LETTERS_PER_LINE * line_number + \
-                    LETTERS_PER_BLOCK * block
-                handle.write((" %s" % data[index:index + LETTERS_PER_BLOCK]))
+            for block in range(self.BLOCKS_PER_LINE):
+                index = self.LETTERS_PER_LINE * line_number + \
+                    self.LETTERS_PER_BLOCK * block
+                handle.write((" %s" % data[index:index + self.LETTERS_PER_BLOCK]))
             handle.write(str((line_number + 1) *
-                             LETTERS_PER_LINE).rjust(POSITION_PADDING))
+                             self.LETTERS_PER_LINE).rjust(self.POSITION_PADDING))
             handle.write("\n")
-        if seq_len % LETTERS_PER_LINE:
+        if seq_len % self.LETTERS_PER_LINE:
             # Final (partial) line
-            line_number = (seq_len // LETTERS_PER_LINE)
+            line_number = (seq_len // self.LETTERS_PER_LINE)
             handle.write("    ")  # Just four, not five
-            for block in range(BLOCKS_PER_LINE):
-                index = LETTERS_PER_LINE * line_number + \
-                    LETTERS_PER_BLOCK * block
+            for block in range(self.BLOCKS_PER_LINE):
+                index = self.LETTERS_PER_LINE * line_number + \
+                    self.LETTERS_PER_BLOCK * block
                 handle.write(
-                    (" %s" % data[index:index + LETTERS_PER_BLOCK]).ljust(11))
-            handle.write(str(seq_len).rjust(POSITION_PADDING))
+                    (" %s" % data[index:index + self.LETTERS_PER_BLOCK]).ljust(11))
+            handle.write(str(seq_len).rjust(self.POSITION_PADDING))
             handle.write("\n")
 
     def _write_single_line(self, tag, text):
@@ -992,6 +1054,12 @@ class EmblWriter(_InsdcWriter):
             # Must be something like NucleotideAlphabet
             raise ValueError("Need a DNA, RNA or Protein alphabet")
 
+        if record.annotations.get("molecule_type", None):
+            # Note often get RNA vs DNA discrepancy in real EMBL/NCBI files
+            mol_type = record.annotations["molecule_type"]
+            if mol_type in ["protein"]:
+                mol_type = "PROTEIN"
+
         # Get the taxonomy division
         division = self._get_data_division(record)
 
@@ -1012,7 +1080,8 @@ class EmblWriter(_InsdcWriter):
         self._write_single_line("AC", accession + ";")
         handle.write("XX\n")
 
-    def _get_data_division(self, record):
+    @staticmethod
+    def _get_data_division(record):
         try:
             division = record.annotations["data_file_division"]
         except KeyError:
@@ -1120,7 +1189,6 @@ class EmblWriter(_InsdcWriter):
 
     def write_record(self, record):
         """Write a single record to the output file."""
-
         handle = self.handle
         self._write_the_first_lines(record)
 
@@ -1199,7 +1267,7 @@ class ImgtWriter(EmblWriter):
     QUALIFIER_INDENT = 25  # Not 21 as in EMBL
     QUALIFIER_INDENT_STR = "FT" + " " * (QUALIFIER_INDENT - 2)
     QUALIFIER_INDENT_TMP = "FT   %s                    "  # 25 if %s is empty
-    FEATURE_HEADER = "FH   Key                 Location/Qualifiers\n"
+    FEATURE_HEADER = "FH   Key                 Location/Qualifiers\nFH\n"
 
 if __name__ == "__main__":
     from Bio._utils import run_doctest

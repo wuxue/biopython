@@ -59,7 +59,7 @@ def UniprotIterator(handle, alphabet=Alphabet.ProteinAlphabet(), return_raw_comm
     if not hasattr(handle, "read"):
         if isinstance(handle, str):
             import warnings
-            from Biopython import BiopythonDeprecationWarning
+            from Bio import BiopythonDeprecationWarning
             warnings.warn("Passing an XML-containing handle is recommended",
                           BiopythonDeprecationWarning)
             handle = StringIO(handle)
@@ -113,7 +113,7 @@ class Parser(object):
             """Parse protein names (PRIVATE)."""
             descr_set = False
             for protein_element in element:
-                if protein_element.tag in [NS + 'recommendedName', NS + 'alternativeName']:  # recommendedName tag are parsed before
+                if protein_element.tag in [NS + 'recommendedName', NS + 'submittedName', NS + 'alternativeName']:  # recommendedName tag are parsed before
                     # use protein fields for name and description
                     for rec_name in protein_element:
                         ann_key = '%s_%s' % (protein_element.tag.replace(NS, ''),
@@ -216,7 +216,6 @@ class Parser(object):
                 "mass spectrometry"
                 "interaction"
             """
-
             simple_comments = ["allergen",
                                "biotechnology",
                                "biophysicochemical properties",
@@ -276,7 +275,7 @@ class Parser(object):
                         else:
                             start = int(list(loc_element.getiterator(NS + 'begin'))[0].attrib['position']) - 1
                             end = int(list(loc_element.getiterator(NS + 'end'))[0].attrib['position'])
-                    except ValueError:  # undefined positions or erroneously mapped
+                    except (ValueError, KeyError):  # undefined positions or erroneously mapped
                         pass
                 mass = element.attrib['mass']
                 method = element.attrib['method']
